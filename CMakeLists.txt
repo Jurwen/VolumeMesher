@@ -47,10 +47,6 @@ add_library(${PROJECT_NAME}_lib
     ${SOURCES}
 )
 
-target_link_libraries(${PROJECT_NAME}_lib 
-    PUBLIC 
-    Eigen3::Eigen
-    )
 
 set(ALL_TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_lib)
 
@@ -88,5 +84,11 @@ endif()
 target_include_directories(${TARGET} PUBLIC
 	src
 )
+
+target_link_libraries(${TARGET} 
+    PUBLIC 
+    Eigen3::Eigen
+    )
+
 endforeach(TARGET)
 
