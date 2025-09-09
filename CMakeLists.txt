@@ -22,6 +22,10 @@ project(mesh_generator)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
+
+include(Eigen3)
+
 set (SOURCES
     src/makePolyhedralMesh.cpp
     src/delaunay.cpp
@@ -42,6 +46,11 @@ add_executable(${PROJECT_NAME}
 add_library(${PROJECT_NAME}_lib 
     ${SOURCES}
 )
+
+target_link_libraries(${PROJECT_NAME}_lib 
+    PUBLIC 
+    Eigen3::Eigen
+    )
 
 set(ALL_TARGETS ${PROJECT_NAME} ${PROJECT_NAME}_lib)
 
