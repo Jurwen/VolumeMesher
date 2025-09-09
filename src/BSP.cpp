@@ -158,10 +158,11 @@ inline void BSPcomplex::assigne_edge_to_face(uint64_t edge, uint64_t face){
 uint64_t BSPcomplex::faceSharedWithCell(uint64_t c1, uint64_t c2){
 
   BSPcell& cell1 = cells[c1];
-  for(uint64_t i=0; i<cell1.faces.size(); i++)
+  for(uint64_t i=0; i<cell1.faces.size(); i++) {
     if(faces[ cell1.faces[i] ].conn_cells[0] == c2 ||
        faces[ cell1.faces[i] ].conn_cells[1] == c2   )
        return cell1.faces[i];
+  }
 
   #ifdef DEBUG_BSP
   printf("\n[BSP.cpp]BSPcomplex::faceSharedWithCell: ERROR no common face "
@@ -236,7 +237,14 @@ void BSPcomplex::list_cellVertices(BSPcell& cell, uint64_t num_cellEdges,
     }
 
     // Reset vrts_visit
-    for(uint32_t u=0; u<cell_vrts.size(); u++) vrts_visit[ cell_vrts[u] ]=0;
+    for(uint32_t u=0; u<cell_vrts.size(); u++) {
+        // std::cout << "cell_vrts.size(): "<<cell_vrts.size() <<", u: "<< u  << std::endl;
+        // std::cout << "cell_vrts[u]: "<<cell_vrts[u]  << std::endl;
+        // std::cout << "vrts_visit: "<<vrts_visit.size()  << std::endl;
+        vrts_visit[ cell_vrts[u] ]=0;
+        // std::cout << "vrts_visit[ cell_vrts[u] ]=0 end"  << std::endl;
+    }
+    // std::cout << "list_cellVertices 10"  << std::endl;
 }
 
 //  Input: a BSPface: face,
@@ -641,23 +649,30 @@ uint64_t BSPcomplex::add_tetEdge(const TetMesh* mesh, uint32_t e0, uint32_t e1,
                                  uint64_t tet_ind,
                                  const vector<uint64_t>& new_order){
     // Tetrahedra incident in <endpt0,endpt1>
+    // std::cout << "e0: " << e0 << ", e1: " << e1 << std::endl;
     uint32_t edge_ends[2] = { e0, e1 };
     uint64_t num_incTet;
+    // std::cout << "ETrelation start" << std::endl;
     uint64_t* incTet = mesh->ETrelation(edge_ends, tet_ind, &num_incTet);
+    // std::cout << "ETrelation done" << std::endl;
+    // std::cout << "num_incTet: " << num_incTet << std::endl;
     // Note. ETrelation can return ghost-tet.
 
     uint64_t min = UINT64_MAX;
     for (uint32_t i = 0; i < num_incTet; i++)
         if (!IS_GHOST_TET(incTet[i]) && incTet[i] < min) min = incTet[i];
+    // std::cout << "IS_GHOST_TET done " << std::endl;
 
     free(incTet);
 
+    // std::cout << "min: " << min << ", tet_ind: " << tet_ind << std::endl;
     if(min == tet_ind){
       // None of the tetrahedra incident in <e0,e1> has been visited,
       // furthermore the edge <e0,e1> do not belongs to a face of tet_ind
       // (as a consequence of the constructor BSPcomplex).
       // A new BSPedge has to be created.
       edges.push_back( BSPedge(e0,e1, e0,e1) );
+      // std::cout << "add_tetEdge return edges.size(): " << edges.size() << std::endl;
       return edges.size()-1;
     }
 
@@ -806,11 +821,15 @@ BSPcomplex::BSPcomplex(const TetMesh* mesh, const constraints_t* _constraints,
                        const uint32_t** map_f3, const uint32_t* num_map_f3 ){
 
   // Uploading the vertices of the mesh
+  // std::cout << "BSPcomplex::BSPcomplex" << std::endl;
   vertices.resize(mesh->num_vertices);
-  for(uint32_t vrt=0; vrt<mesh->num_vertices; vrt++)
+  vert_dists.resize(mesh->num_vertices, 0);
+  for(uint32_t vrt=0; vrt<mesh->num_vertices; vrt++) {
     vertices[vrt] = new explicitPoint3D(mesh->vertices[vrt].coord[0],
                                             mesh->vertices[vrt].coord[1],
                                             mesh->vertices[vrt].coord[2]);
+    vert_dists[vrt] = mesh->vert_dist[vrt];
+  }
 
   // Initialize vrts_orBin:
   // since orient3D can be -1, 0 or 1 all elements are set to 2.
@@ -830,33 +849,43 @@ BSPcomplex::BSPcomplex(const TetMesh* mesh, const constraints_t* _constraints,
   // Establish new tetrahedtra-(cell) indexing: only non-ghost cell are indexed.
   vector<uint64_t> new_order(mesh->tet_num, UINT64_MAX);
   uint64_t cell_num = removing_ghost_tets(mesh, new_order);
+  // std::cout << "cell_num: " << cell_num<<std::endl;
 
   // Creating as many empty cells as the number of non-ghost tet_
   cells.resize(cell_num);
   edges.reserve(cell_num + mesh->num_vertices);
   faces.reserve(cell_num * 2);
+  in_out_label.resize(cell_num, -1);
 
 
   // Loading the cells, creating faces and eadges of the BSP:
   // cells -> the non-ghost tetrahedra in the mesh,
   // faces -> the faces of the non-ghost tetrahedra in the mesh,
   // edges -> the edges of the non-ghost tetrahedra in the mesh.
+  // std::cout << "WARNING!!!!!!!!!!!!!!!!!!!!!! BUGS THERE" << std::endl;
   for(uint64_t tet_ind=0; tet_ind<mesh->tet_num; tet_ind++){
+  // for(uint64_t tet_ind=0; tet_ind<10; tet_ind++){
     // Here each BSPcell is a non-ghost tetrahedron of the mesh:
     // consider a tetrahedron (tet) whose index is tet_ind.
+    // std::cout << "tet_ind: " << tet_ind << ", new_order.size(): " << new_order.size() << std::endl;
     uint64_t cell_ind = new_order[tet_ind];
+    // std::cout << "tet_ind: " << tet_ind << ", cell_ind: " << cell_ind << std::endl;
+    // std::cout << "IS_GHOST_CELL(cell_ind): " << IS_GHOST_CELL(cell_ind) << std::endl;
     if( IS_GHOST_CELL(cell_ind) )   continue; // Skip ghost-tet.
+    in_out_label[cell_ind] = mesh->tet_inout[tet_ind];
 
     // Create BSPcells from tetrahedra by following increasing indexing:
     // all non-ghost tetrahedra which have index lower than tet_ind
     // have been already turned into BSP cells.
 
     // Constraints improperly intersecated by tet.
+    // std::cout << "num_map[tet_ind]: " << num_map[tet_ind] << std::endl;
     if(num_map[tet_ind]>0){
       cells[cell_ind].constraints.resize( num_map[tet_ind] );
       for(uint32_t i=0; i<num_map[tet_ind]; i++)
         cells[cell_ind].constraints[i] = map[tet_ind][i];
     }
+
 
     // Adding BSPface and BSPedges to create a BSPcell conformed to tetrahedron.
     uint32_t v[4]; // Indices of tet vertices.
@@ -864,14 +893,19 @@ BSPcomplex::BSPcomplex(const TetMesh* mesh, const constraints_t* _constraints,
     v[1] = mesh->tet_node[4 * tet_ind + 1];
     v[2] = mesh->tet_node[4 * tet_ind + 2];
     v[3] = mesh->tet_node[4 * tet_ind + 3];
+    // std::cout << "v: " << v[0] << ", " << v[1] << ", " << v[2] << ", " << v[3] << std::endl;
 
     uint64_t face_ind, adjCell_ind, adjTet_ind;
     uint64_t tet_edge[6];
     // --- face <v0,v1,v2> -----------------------------
     adjTet_ind = mesh->tet_neigh[4 * tet_ind + 3] >> 2;
     adjCell_ind = new_order[adjTet_ind];
+    // std::cout << "tet_ind: " << tet_ind << ", adjTet_ind: " << adjTet_ind << std::endl;
+    // std::cout << "cell_ind: " << cell_ind << ", adjCell_ind: " << adjCell_ind << std::endl;
     if (tet_face_isNew(tet_ind, adjTet_ind, adjCell_ind)) {
+        // std::cout << "is new" << std::endl;
         face_ind = add_tetFace(v[0], v[1], v[2], cell_ind, adjCell_ind);
+        // std::cout << "face_ind: " << face_ind << std::endl;
         // At most three edges may have to be created <v0,v1>, <v1,v2>, <v2,v0>.
         tet_edge[0] = add_tetEdge(mesh, v[0], v[1], tet_ind, new_order);
         assigne_edge_to_face(tet_edge[0], face_ind);
@@ -879,15 +913,19 @@ BSPcomplex::BSPcomplex(const TetMesh* mesh, const constraints_t* _constraints,
         assigne_edge_to_face(tet_edge[2], face_ind);
         tet_edge[1] = add_tetEdge(mesh, v[1], v[2], tet_ind, new_order);
         assigne_edge_to_face(tet_edge[1], face_ind);
+        // std::cout << "tet_edge: " << tet_edge[0] << ", " << tet_edge[1] << ", " << tet_edge[2] << std::endl;
         // Color and coplanar-constraints
         fill_face_colour(tet_ind, face_ind, map_f3, num_map_f3);
     }
     else {
+        // std::cout << "no new" << std::endl;
         face_ind = faceSharedWithCell(cell_ind, adjCell_ind);
+        // std::cout << "face_ind: " << face_ind << std::endl;
         BSPface& face = faces[face_ind];
         tet_edge[0] = find_face_edge(face, v[0], v[1]);
         tet_edge[1] = find_face_edge(face, v[1], v[2]);
         tet_edge[2] = find_face_edge(face, v[2], v[0]);
+        // std::cout << "tet_edge: " << tet_edge[0] << ", " << tet_edge[1] << ", " << tet_edge[2] << std::endl;
     }
     // --- face <v3,v0,v1> -----------------------------
     adjTet_ind = mesh->tet_neigh[4 * tet_ind + 2] >> 2;
@@ -947,7 +985,9 @@ BSPcomplex::BSPcomplex(const TetMesh* mesh, const constraints_t* _constraints,
   vrts_visit.resize(vertices.size(), 0);
   edge_visit.resize(edges.size(), 0);
 
-
+  // std::cout << "tet_num: " << mesh->tet_num << std::endl;
+  // std::cout << "vertices.size(): " << vertices.size() << ", edges.size(): " << edges.size() << ", cells.size(): " << cells.size() << std::endl;
+  // std::cout << "BSPcomplex::BSPcomplex done" << std::endl;
   // Verify that conn_cell[0] is below the face for every face
   //for (size_t fid = 0; fid < faces.size(); fid++)
   //    if (!faceHasCorrectOrientation(this, fid))
@@ -1987,7 +2027,7 @@ void BSPcomplex::splitCell(uint64_t cell_ind){
 //       detach a triangualr face from the face faces[face_ind].
 //       This 2 last edges are replaced in the vector face[face_ind].edges by
 //       one new edge: the one that closes the detached triangualr face.
-bool BSPcomplex::triangle_detach(uint64_t face_ind){
+void BSPcomplex::triangle_detach(uint64_t face_ind){
   BSPface& face = faces[face_ind];
   uint64_t num_face_edges = face.edges.size();
 
@@ -2002,13 +2042,6 @@ bool BSPcomplex::triangle_detach(uint64_t face_ind){
       edges[s_12_ind].vertices[0], edges[s_12_ind].vertices[1]);
   uint32_t t0 = other_edge_endpt(edges[s_01_ind].vertices[0], edges[s_01_ind].vertices[1], t1);
   uint32_t t2 = other_edge_endpt(edges[s_12_ind].vertices[0], edges[s_12_ind].vertices[1], t1);
-
-  if (!genericPoint::misaligned(*vertices[t0], *vertices[t1], *vertices[t2])) return false;
-
-  uint64_t s_23_ind = face.edges[num_face_edges - 3];
-  uint32_t t3 = edges[s_23_ind].vertices[0];
-  if (t3 == t2) t3 = edges[s_23_ind].vertices[1];
-  if (!genericPoint::misaligned(*vertices[t0], *vertices[t2], *vertices[t3])) return false;
 
   // Connect t2 and t0 with a new edge.
   edges.push_back(BSPedge());
@@ -2067,7 +2100,6 @@ bool BSPcomplex::triangle_detach(uint64_t face_ind){
   triangular_BSPface_isDegenerate(faces, edges, vertices, new_face_ind);
   #endif
 
-  return true;
 }
 
 //  Input:
@@ -2096,32 +2128,28 @@ void BSPcomplex::triangulateFace(uint64_t face_ind){
   // edges indices, of BSPface faces[face_ind], are listed in the vector
   // faces[face_ind].edges ordered as walking face-boundary clockwise
   // (or counterclockwise).
-  uint64_t num_face_edges = faces[face_ind].edges.size();
-  
-  while (num_face_edges > 3) {
-      if (triangle_detach(face_ind)) num_face_edges--;
+  BSPface& face = faces[face_ind];
+  uint64_t num_face_edges = face.edges.size();
+
+  while(num_face_edges > 3){
+
+    // Check if last two edges are not-aligned.
+    if(!aligned_face_edges(num_face_edges-1, num_face_edges-2, faces[face_ind]) ){
+
+      // To remove the triangle with the vertices of the last two edges
+      // one must be sure that the remaining face does not become degenerate.
+
+      if(!aligned_face_edges(0, num_face_edges-3, faces[face_ind]) ){
+
+        triangle_detach(face_ind);
+        num_face_edges--;
+      }
       else UINT64_vect_down_shift(faces[face_ind].edges, 1);
+
+    }
+    else UINT64_vect_down_shift(faces[face_ind].edges, 1);
+
   }
-
-  //while(num_face_edges > 3){
-
-  //  // Check if last two edges are not-aligned.
-  //  if(!aligned_face_edges(num_face_edges-1, num_face_edges-2, faces[face_ind]) ){
-
-  //    // To remove the triangle with the vertices of the last two edges
-  //    // one must be sure that the remaining face does not become degenerate.
-  //    
-  //    if(!aligned_face_edges(0, num_face_edges-3, faces[face_ind]) ){
-
-  //      triangle_detach(face_ind);
-  //      num_face_edges--;
-  //    }
-  //    else UINT64_vect_down_shift(faces[face_ind].edges, 1);
-
-  //  }
-  //  else UINT64_vect_down_shift(faces[face_ind].edges, 1);
-
-  //}
 }
 
 //  Input: vertices indices of a BSPelement: vrts.
@@ -2139,38 +2167,11 @@ void BSPcomplex::computeBaricenter(const vector<uint32_t>& vrts){
             sum_y += cy;
             sum_z += cz;
             np++;
-            //break; // This line should be commented to have an actual barycenter !!!!!!
+            break; // This line should be commented to have an actual barycenter !!!!!!
         }
 
     vertices.push_back(new explicitPoint3D(sum_x / np, sum_y / np, sum_z / np));
     vrts_visit.push_back(0);
-}
-
-genericPoint* BSPcomplex::createExactBarycenter(const vector<uint32_t>& vrts) {
-    //
-    // 1) Pick two vertices
-    // 2) Pick a third vertex which is not aligned with the first two
-    // 3) Pick a fourth vertex whose o3d with the other three is not zero
-    // 4) Compute their (exact) barycenter
-    //
-    uint32_t vi[4] = { vrts[0], vrts[1], UINT32_MAX, UINT32_MAX };
-    const genericPoint* av[4];
-    av[0] = vertices[vi[0]];
-    av[1] = vertices[vi[1]];
-    size_t i = 2;
-    for (; i < vrts.size(); i++) if (genericPoint::misaligned(*av[0], *av[1], *vertices[vrts[i]])) { vi[2] = vrts[i]; break; }
-    av[2] = vertices[vi[2]];
-    for (i++; i < vrts.size(); i++) if (genericPoint::orient3D(*av[0], *av[1], *av[2], *vertices[vrts[i]]) != 0) { vi[3] = vrts[i]; break; }
-    av[3] = vertices[vi[3]];
-
-    //std::cout << *av[0] << "\n";
-    //std::cout << *av[1] << "\n";
-    //std::cout << *av[2] << "\n";
-    //std::cout << *av[3] << "\n";
-    //std::cout << implicitPoint3D_TBC(*av[0], *av[1], *av[2], *av[3]) << "\n";
-    //getchar();
-
-    return new implicitPoint3D_TBC(*av[0], *av[1], *av[2], *av[3]);
 }
 
 //
@@ -2279,12 +2280,7 @@ void BSPcomplex::makeTetrahedra()
 
           if(needs_barycenter){ // Cell need baricenter
             decomposition_type[cell_i] = 2;
-
-            genericPoint* bp = createExactBarycenter(cell_vrts);
-            vertices.push_back(bp);
-            vrts_visit.push_back(0);
-            
-            //computeBaricenter(cell_vrts);
+            computeBaricenter(cell_vrts);
             decomposition_vrt[cell_i] = ((uint32_t)vertices.size() - 1);
             tet_num += cell.faces.size();
           }
@@ -2303,7 +2299,7 @@ void BSPcomplex::makeTetrahedra()
         vector<uint32_t> cell_vrts(4, UINT32_MAX);
         list_cellVertices(cells[cell_i], 6, cell_vrts);
         final_tets.insert(final_tets.end(), cell_vrts.begin(), cell_vrts.end());
-       }
+      }
       else if(decomposition_type[cell_i] == 1){ // Tetrahedralizable from vertex
         uint32_t v = decomposition_vrt[cell_i];
         uint64_t num_incFaces = count_cellFaces_inc_cellVrt(cells[cell_i], v);
@@ -2329,15 +2325,6 @@ void BSPcomplex::makeTetrahedra()
       }
     }
 
-    // Make sure that all tets have a positive orientation
-    for (uint32_t t = 0; t < final_tets.size(); t += 4) {
-        if (genericPoint::orient3D(
-            *vertices[final_tets[t]], 
-            *vertices[final_tets[t + 1]], 
-            *vertices[final_tets[t + 2]],
-            *vertices[final_tets[t + 3]]) < 0
-           ) std::swap(final_tets[t], final_tets[t + 1]);
-    }
 }
 
 
@@ -2373,7 +2360,9 @@ void BSPcomplex::get_approx_faceBaricenterCoord(const BSPface& face, double* bar
       const BSPedge& edge = edges[face.edges[e]];
       if (vid == edge.vertices[0]) vid = edge.vertices[1];
       else vid = edge.vertices[0];
+      // std::cerr << "vid: " << vid << std::endl;
       vertices[vid]->getApproxXYZCoordinates(tp[0], tp[1], tp[2]);
+      // std::cerr << "tp: " << tp[0] << ", " << tp[1] << ", " << tp[2] << std::endl;
       bar[0] += tp[0];
       bar[1] += tp[1];
       bar[2] += tp[2];
@@ -2427,6 +2416,8 @@ COLOUR_T BSPcomplex::blackAB_or_white(uint64_t face_ind, bool two_input){
 
   // Get dominant normal component
   int xyz = face_dominant_normal_component(face);
+  // std::cerr << "face vertices: " << face.meshVertices[0] << ", " << face.meshVertices[1] << ", " << face.meshVertices[2] << std::endl;
+  // std::cerr << "xyz: " << xyz << std::endl;
 
   // Calculate approximated face barycenter
   double p[3];
@@ -2440,17 +2431,29 @@ COLOUR_T BSPcomplex::blackAB_or_white(uint64_t face_ind, bool two_input){
   // Check whether the barycenter is indeed inside the face (might be not due to approximation)
   if ( is_baricenter_inFace(face, face_center, xyz) ) // Barycenter is inside the face: just check that it is in one of the constraints too
   {
+      // std::cerr << "is_baricenter_inFace" << std::endl;
       for (uint32_t c = 0; c < face.coplanar_constraints.size(); c++) {
           const uint32_t constr = face.coplanar_constraints[c];
           const CONSTR_GROUP_T c_group = constraint_group[constr];
 
+          // std::cerr << "two_input: "<< two_input << std::endl;
+          // std::cerr << "faceColour_matches_constrGroup: start"<< std::endl;
+          // std::cerr << "group: " << c_group << ", CONSTR_A: " << CONSTR_A << ", f_blackA: " << face_is_blackA << std::endl;
+          // std::cerr << "group: " << c_group << ", CONSTR_B: " << CONSTR_B << ", f_blackB: " << face_is_blackB << std::endl;
           if( two_input && faceColour_matches_constrGroup(c_group, face_is_blackA, face_is_blackB) ) continue;
+          // std::cerr << "faceColour_matches_constrGroup done: "<< faceColour_matches_constrGroup(c_group, face_is_blackA, face_is_blackB) << std::endl;
 
           const uint32_t constr_ID = 3 * constr;
           const genericPoint* c0 = vertices[ constraints_vrts[constr_ID   ] ];
           const genericPoint* c1 = vertices[ constraints_vrts[constr_ID +1] ];
           const genericPoint* c2 = vertices[ constraints_vrts[constr_ID +2] ];
 
+          // std::cerr << "constraints: " << constraints_vrts[constr_ID   ] << ", " << constraints_vrts[constr_ID +1] << ", " << constraints_vrts[constr_ID +2] << std::endl;
+          // std::cerr << "c0: "<< *c0 << std::endl;
+          // std::cerr << "c1: "<< *c1 << std::endl;
+          // std::cerr << "c2: "<< *c2 << std::endl;
+          // std::cerr << "face_center: "<< face_center << std::endl;
+          // std::cerr << "pointInTriangle: "<< genericPoint::pointInTriangle(face_center, *c0, *c1, *c2, xyz) << std::endl;
           if (genericPoint::pointInTriangle(face_center, *c0, *c1, *c2, xyz)){
 
             if(!two_input) return BLACK_A;
@@ -2470,6 +2473,7 @@ COLOUR_T BSPcomplex::blackAB_or_white(uint64_t face_ind, bool two_input){
   }
   else // Barycenter is not inside the face: revert to slow version
   {
+      // std::cerr << "Barycenter is not inside the face" << std::endl;
       const BSPedge& edge0 = edges[face.edges.back()];
       const BSPedge& edge1 = edges[face.edges[0]];
       uint32_t vid = consecEdges_common_endpt(edge0.vertices[0], edge0.vertices[1],

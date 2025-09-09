@@ -5,7 +5,7 @@
 
 TetMesh::TetMesh() : 
     vertices(NULL), num_vertices(0), 
-    tet_node(NULL), tet_neigh(NULL), tet_subdet(NULL), tet_num(0), tet_size(0), tet_num_vertices(0), mark_tetrahedra(NULL), 
+    tet_node(NULL), tet_neigh(NULL), tet_subdet(NULL), tet_num(0), tet_size(0), tet_num_vertices(0), mark_tetrahedra(NULL), tet_inout(NULL), tet_num_nonghost(0),
     Del_size_tmp(1024), Del_num_tmp(0), Del_tmp(NULL), Del_size_deleted(1024), Del_num_deleted(0), Del_deleted(NULL), Del_buffer(NULL)
 {
 }
@@ -16,6 +16,8 @@ TetMesh::~TetMesh() {
     free(tet_neigh);
     free(tet_subdet);
     free(mark_tetrahedra);
+    free(tet_inout);
+    free(vert_dist);
 }
 
 void TetMesh::reserve(uint64_t ntet){
@@ -23,6 +25,8 @@ void TetMesh::reserve(uint64_t ntet){
   tet_neigh = (uint64_t *)realloc(tet_neigh, ntet*4*sizeof(uint64_t));
   tet_subdet = (double *)realloc(tet_subdet, ntet*4*sizeof(double));
   tet_node = (uint32_t *)realloc(tet_node, ntet*4*sizeof(uint32_t));
+  tet_inout = (double *)realloc(tet_inout, ntet*sizeof(double));
+  vert_dist = (double *)realloc(vert_dist, ntet*sizeof(double));
   tet_size = ntet;
   mark_tetrahedra = (uint32_t *)realloc(mark_tetrahedra, ntet*sizeof(uint32_t));    // Mod.1
 }
@@ -64,6 +68,7 @@ void TetMesh::init(){
   // Find non-coplanar vertices (we assume that no coincident vertices exist)
   double ori=0.0;
   uint32_t i=0, j=1, k=2, l=3;
+  std::cerr << "TetMesh::init n: "<< n << std::endl;
 
   for (; ori==0.0 && k<n-1; k++)
       for (l = k + 1; ori == 0.0 && l < n; l++)
@@ -75,6 +80,7 @@ void TetMesh::init(){
 
   if(ori==0.0)
     ip_error("Input vertices do not define a volume.\n");
+  std::cerr << "TetMesh::init there 1"<< std::endl;
 
   std::swap(vertices[k], vertices[2]); k=2;
   std::swap(vertices[l], vertices[3]); l=3;
@@ -556,7 +562,7 @@ void TetMesh::compute_subDet(const uint64_t tet)
 // incident tetrahedra in a vertex
 //---------------------------------
 
-// - This was initially recursive but led to stack overflows on big models. Turned to iterative.
+// - Recursive function -
 //  Input: tetrahedra (tet) index: tet_ind,
 //         the index of the vertex in which incidences are searched: central_vertex_ind,
 //         pointer to mesh,
@@ -567,37 +573,27 @@ void TetMesh::compute_subDet(const uint64_t tet)
 //         - is NOT a GHOST TETRHEDRON,
 //         - is NOT been already VISITED (mark_tetrahedra=0).
 //         If tot_incTet is incremented the relative tetrahedra is passed to this function...
-
 void count_incTet(uint64_t tet_ind, const uint32_t central_vertex_ind, TetMesh* mesh, uint64_t* tot_incTet){   // Mod.1
-
-    static std::vector<uint64_t> vt_queue; // Static to avoid reallocation at each call
-    vt_queue.push_back(tet_ind);
-
-    while (!vt_queue.empty()) {
-        tet_ind = vt_queue.back(); vt_queue.pop_back();
-        for (uint32_t i = 0; i < 4; i++)
+    for(uint32_t i=0; i<4; i++)
+    {
+        if(mesh->tet_node[4*tet_ind+i] != central_vertex_ind)
         {
-            if (mesh->tet_node[4 * tet_ind + i] != central_vertex_ind)
-            {
-                uint64_t neigh_tet_ind = mesh->tet_neigh[4 * tet_ind + i] >> 2;
-                // ghost vertex is always in the last slot of the tetrahedron vertices.
+            uint64_t neigh_tet_ind = mesh->tet_neigh[4*tet_ind+i]>>2;
+            // ghost vertex is always in the last slot of the tetrahedron vertices.
 
-                if (mesh->mark_tetrahedra[neigh_tet_ind] == 1 ||
-                    mesh->tet_node[4 * neigh_tet_ind + 3] == INFINITE_VERTEX)
-                    continue;
+            if(mesh->mark_tetrahedra[neigh_tet_ind]==1                        ||
+               mesh->tet_node[4* neigh_tet_ind +3] == INFINITE_VERTEX   )
+                continue;
 
-                mesh->mark_tetrahedra[neigh_tet_ind] = 1;
-                (*tot_incTet)++;
-                vt_queue.push_back(neigh_tet_ind);
-            }
+            mesh->mark_tetrahedra[ neigh_tet_ind ]=1;
+            (*tot_incTet)++;
+            count_incTet(neigh_tet_ind, central_vertex_ind, mesh, tot_incTet);
         }
     }
-
-    vt_queue.clear();
 }
 
 
-// - This was initially recursive but led to stack overflows on big models. Turned to iterative.
+// - Recursive function -
 //  Input: tetrahedra (tet) index: tet_ind,
 //         pointer to mesh,
 //         pointer to a tetraheron index type: incTet,
@@ -607,36 +603,18 @@ void count_incTet(uint64_t tet_ind, const uint32_t central_vertex_ind, TetMesh* 
 //         Face neighbour of tet is added to incTet if its marker is equal to 1.
 //         pos stores the number of elements of incTet.
 void save_incTet(uint64_t tet_ind, TetMesh* mesh, uint64_t* incTet, uint64_t* pos){      // Mod.1
-    uint64_t idx = 0;
-    incTet[idx++] = tet_ind;
-    mesh->mark_tetrahedra[tet_ind] = 0;
-
-    for (uint64_t j = 0; j < idx; j++) {
-        tet_ind = incTet[j];
-        for (uint32_t i = 0; i < 4; i++)
+    for(uint32_t i=0; i<4; i++)
+    {
+        if( mesh->mark_tetrahedra[ mesh->tet_neigh[4*tet_ind+i]>>2 ] == 1 )
         {
-            if (mesh->mark_tetrahedra[mesh->tet_neigh[4 * tet_ind + i] >> 2] == 1)
-            {
-                uint64_t neigh_tet_ind = mesh->tet_neigh[4 * tet_ind + i] >> 2;
-                incTet[idx++] = neigh_tet_ind;
-                mesh->mark_tetrahedra[neigh_tet_ind] = 0;
-            }
+            (*pos)++;
+            uint64_t neigh_tet_ind = mesh->tet_neigh[4*tet_ind+i]>>2;
+            incTet[*pos]=neigh_tet_ind;
+            mesh->mark_tetrahedra[neigh_tet_ind]=0;
+
+            save_incTet(neigh_tet_ind, mesh, incTet, pos);
         }
     }
-    *pos = idx;
-
-    //for(uint32_t i=0; i<4; i++)
-    //{
-    //    if( mesh->mark_tetrahedra[ mesh->tet_neigh[4*tet_ind+i]>>2 ] == 1 )
-    //    {
-    //        (*pos)++;
-    //        uint64_t neigh_tet_ind = mesh->tet_neigh[4*tet_ind+i]>>2;
-    //        incTet[*pos]=neigh_tet_ind;
-    //        mesh->mark_tetrahedra[neigh_tet_ind]=0;
-
-    //        save_incTet(neigh_tet_ind, mesh, incTet, pos);
-    //    }
-    //}
 
 }
 
@@ -680,37 +658,66 @@ uint64_t* TetMesh::incident_tetrahedra(const uint32_t central_vertex_ind, uint64
 //  Note. The tetrahedron must have (edge_ends[0],edge_ends[1]) as its side.
 uint64_t* TetMesh::ETrelation(const uint32_t* edge_ends, const uint64_t tet0_ind, uint64_t* length_related_tet) const
 {
+    // std::cout << "ETrelation 0" << std::endl;
     uint64_t prec_tet_ind, curr_tet_ind;
     uint64_t move_dir, next_move_dir;
     uint32_t v_ind, other_tet_vrts_ind[2];
     uint64_t num_related_tet = 1; // counts first_tet
 
+    // std::cout << "tet0_ind: " << tet0_ind << std::endl;
+    // std::cout << "tet_node: " << tet_node[4*tet0_ind + 0] << ", " << tet_node[4*tet0_ind + 1] << ", " << tet_node[4*tet0_ind + 2] << ", " << tet_node[4*tet0_ind + 3] << std::endl;
+    // std::cout << "edge_ends: " << edge_ends[0] << ", " << edge_ends[1] << std::endl;
     uint64_t i=0;
     for(uint64_t j=0; j<4; j++){
         v_ind = tet_node[4*tet0_ind + j];
         if(v_ind != edge_ends[0] && v_ind != edge_ends[1] ){
             other_tet_vrts_ind[i++] = v_ind;
             move_dir = j;
+            // std::cout << "move_dir: " << move_dir << ", i: " << i << std::endl;
         }
     }
+    // std::cout << "ETrelation 1" << std::endl;
+
+
+    // std::cout << "- - - - - - - - - - - - - - - -" << std::endl;
+    // std::cout << "tet0_ind: " << tet0_ind << std::endl;
+    // std::cout << "tet_node: " << tet_node[4*tet0_ind + 0] << ", " << tet_node[4*tet0_ind + 1] << ", " << tet_node[4*tet0_ind + 2] << ", " << tet_node[4*tet0_ind + 3] << std::endl;
+    for(uint64_t j=0; j<4; j++){
+        uint64_t tmp = tet_neigh[ 4*tet0_ind + j ] & 3;
+        curr_tet_ind = tet_neigh[ 4*tet0_ind + j] >> 2;; // tet1
+        // std::cout << "curr_tet_node: " << tet_node[4*curr_tet_ind + 0] << ", " << tet_node[4*curr_tet_ind + 1] << ", " << tet_node[4*curr_tet_ind + 2] << ", " << tet_node[4*curr_tet_ind + 3] << std::endl;
+        v_ind = tet_node[4*curr_tet_ind + tmp];
+        // std::cout << "j: " << j << ", tmp: " << tmp << ", v_ind: " << v_ind << std::endl;
+    }
+    // std::cout << "- - - - - - - - - - - - - - - -" << std::endl;
 
     // move_dir is the face-ID of tet0->tet1, and vrt-ID opposite to that face [wrt tet0]
     // Move from tet0 to tet1
     prec_tet_ind = tet0_ind;
     curr_tet_ind = tet_neigh[ 4*tet0_ind + move_dir] >> 2; // tet1
+    // std::cout << "ETrelation 2" << std::endl;
+    // if (tet0_ind==9884) {
+    //   std::cout << "edge_ends: " << edge_ends[0] << ", " << edge_ends[1] << std::endl;
+    //   std::cout << "curr_tet_ind: " << curr_tet_ind << ", prec_tet_ind: " << prec_tet_ind << ", tet0_ind: " << tet0_ind << std::endl;
+    //   std::cout << "curr_tet_node: " << tet_node[4*curr_tet_ind + 0] << ", " << tet_node[4*curr_tet_ind + 1] << ", " << tet_node[4*curr_tet_ind + 2] << ", " << tet_node[4*curr_tet_ind + 3] << std::endl;
+    // }
 
     // other_tet_vrts_ind[1] is the index of the vertex opposite to the face between tet0 and tet1,
     // other_tet_vrts_ind[0] is the index of the common vertex (not on the edge) between tet0 and tet1,
     // other_tet_vrts_ind[0] is the index of the vertex opposite to the face between tet1 and tet2
+    // std::cout << "other_tet_vrts_ind: " << other_tet_vrts_ind[0] << ", " << other_tet_vrts_ind[1] << std::endl;
+    // std::cout << "tet_node: " << tet_node[4*curr_tet_ind + 0] << ", " << tet_node[4*curr_tet_ind + 1] << ", " << tet_node[4*curr_tet_ind + 2] << ", " << tet_node[4*curr_tet_ind + 3] << std::endl;
     for(uint64_t j=0; j<4; j++)
         if(tet_node[4*curr_tet_ind + j] == other_tet_vrts_ind[0]){
             next_move_dir = j;     //is the face-ID of tet1 -> tet2, and vrt-ID opposite to that face [wrt tet1]
             break;
         }
+    // std::cout << "ETrelation 3" << std::endl;
+    // std::cout << "move_dir: " << move_dir << ", next_move_dir: " << next_move_dir << std::endl;
 
     // at begininng we have: prec_tet=tet0, curr_tet=tet1, next_tet=tet2.
+    // int tmp_bug_cnt = 0;
     while(curr_tet_ind != tet0_ind){
-
         // Conut curr_tet.
         num_related_tet++;
 
@@ -725,12 +732,35 @@ uint64_t* TetMesh::ETrelation(const uint32_t* edge_ends, const uint64_t tet0_ind
         curr_tet_ind = tet_neigh[ 4* curr_tet_ind + move_dir ] >> 2; // new curr_tet is nex_tet
 
         // Find the face-ID of the common face between new curr_tet and new prec_tet [wrt new curr_tet].
-        for(uint64_t j=0; j<4; j++)
-            if(tet_node[ 4* curr_tet_ind + j ] == v_ind)
-                next_move_dir = j;
+        for(uint64_t j=0; j<4; j++) {
+          // std::cout << "j: " << j << ", tet_node[ 4* curr_tet_ind + j ]: "<< tet_node[ 4* curr_tet_ind + j ] <<", v_ind: "<< v_ind <<std::endl;
+          if(tet_node[ 4* curr_tet_ind + j ] == v_ind)
+              next_move_dir = j;
+        }
+        // tmp_bug_cnt++;
+        // if (tmp_bug_cnt>20) {
+        // if ( (tet_node[4*tet0_ind + 0]==207) && (tet_node[4*tet0_ind + 1]==19920) && (tet_node[4*tet0_ind + 2]==19463) && (tet_node[4*tet0_ind + 3]==211) ) {
+        //   std::cout << "tmp_bug_cnt: " << tmp_bug_cnt << std::endl;
+        //   std::cout << "tet0_ind: " << tet0_ind << std::endl;
+        //   std::cout << "tet0: " << tet_node[4*tet0_ind + 0] << ", " << tet_node[4*tet0_ind + 1] << ", " << tet_node[4*tet0_ind + 2] << ", " << tet_node[4*tet0_ind + 3] << std::endl;
+        //   std::cout << "curr_tet_ind: " << curr_tet_ind << ", prec_tet_ind: " << prec_tet_ind << ", tet0_ind: " << tet0_ind << std::endl;
+        //   std::cout << "tmp: " << tmp << std::endl;
+        //   std::cout << "v_ind: " << v_ind << std::endl;
+        //   std::cout << "curr_tet_ind: " << curr_tet_ind << ", move_dir: " << move_dir << std::endl;
+        //   std::cout << "4* curr_tet_ind + move_dir: " << 4* curr_tet_ind + move_dir << std::endl;
+        //   std::cout << "tet_neigh[ 4* curr_tet_ind + move_dir ]: " << tet_neigh[ 4* curr_tet_ind + move_dir ] << std::endl;
+        //   std::cout << "curr_tet_ind: " << curr_tet_ind << ", prec_tet_ind: " << prec_tet_ind << std::endl;
+        //   std::cout << "curr_tet_node: " << tet_node[4*curr_tet_ind + 0] << ", " << tet_node[4*curr_tet_ind + 1] << ", " << tet_node[4*curr_tet_ind + 2] << ", " << tet_node[4*curr_tet_ind + 3] << std::endl;
+        //   for(uint64_t j=0; j<4; j++) {
+        //     std::cout << "j: " << j << ", tet_node[ 4* curr_tet_ind + j ]: "<< tet_node[ 4* curr_tet_ind + j ] <<", v_ind: "<< v_ind <<std::endl;
+        //   }
+        //   std::cout << "- - -- - --  - - - -- - - - -- - -- - -- ------------------- - - -- -                --------------------- - - -- - -- - - -- - -- -- - -- - -- -- -- - - - " <<std::endl;
+        // }
     }
+    // std::cout << "ETrelation 4" << std::endl;
 
     uint64_t* related_tet = (uint64_t*) malloc(sizeof(uint64_t) * num_related_tet);
+    // std::cout << "ETrelation 5" << std::endl;
 
     for(uint64_t i=0; i<num_related_tet; i++){
 
@@ -750,6 +780,7 @@ uint64_t* TetMesh::ETrelation(const uint32_t* edge_ends, const uint64_t tet0_ind
                 next_move_dir = j;
 
     }
+    // std::cout << "ETrelation 6" << std::endl;
 
     *length_related_tet = num_related_tet;
     return related_tet;
